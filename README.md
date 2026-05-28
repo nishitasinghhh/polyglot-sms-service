@@ -1,202 +1,341 @@
-# RIMFAX GPR Processing Pipeline
-## Replicating Shoemaker et al. (2024) Methodology
+# Polyglot Distributed SMS Service
 
-This pipeline processes RIMFAX ground-penetrating radar data from NASA's
-Perseverance rover to map subsurface stratigraphy on the Jezero crater floor.
+A distributed SMS notification system built with two microservices communicating asynchronously via Apache Kafka.
 
----
+## Architecture
 
-## Getting the Data
-
-RIMFAX data is publicly available on the NASA Planetary Data System (PDS):
-
-**URL:** https://pds-geosciences.wustl.edu/missions/mars2020/rimfax.htm
-
-### What to download:
-1. **Calibrated radar data** — contains the actual radar traces per sol
-2. **Navigation/position data** — rover coordinates for each sounding
-3. **Documentation** — describes file formats and metadata
-
-### Data organization:
 ```
-rimfax_data/
-├── sol_00383/
-│   ├── rimfax_00383_surface.csv
-│   ├── rimfax_00383_shallow.csv
-│   └── rimfax_00383_deep.csv
-├── sol_00384/
-│   └── ...
-├── nav/
-│   ├── rimfax_00383_nav.csv
-│   └── ...
+                        ┌─────────────────┐
+                        │      Kafka      │
+                        │  (sms-events)   │
+                        └───▲─────────┬───┘
+               4. Publish   │         │  5. Consume
+                  Event     │         ▼
+┌───────────────────────┐       ┌───────────────────────┐
+│  SMS Sender (Java)    │       │  SMS Store (GoLang)   │
+│  Spring Boot          │       │  net/http             │
+│                       │       │                       │
+│  POST /v1/sms/send    │       │  GET /v1/user/{userId}│
+│                       │       │      /messages        │
+└──┬──────────┬─────────┘       └───────────┬───────────┘
+   │          │                             │
+   │ 2.Check  │ 3.Send                      │ 6.Store
+   │          │                             │
+┌──▼──┐  ┌───▼──────────┐           ┌──────▼──────┐
+│Redis│  │ 3P SMS Vendor│           │  MongoDB    │
+│     │  │  (Mocked)    │           │             │
+└─────┘  └──────────────┘           └─────────────┘
 ```
 
-If you don't have the real data yet, the pipeline generates realistic
-synthetic data automatically for demonstration purposes.
+### Data Flow
 
----
+1. Client sends a POST request to the Java SMS Sender service.
+2. Java checks the Redis block list — if the user is blocked, the request is rejected.
+3. Java calls the 3rd party SMS vendor API (mocked with random SUCCESS/FAIL).
+4. Java publishes an SMS event (with status) to the Kafka topic `sms-events`.
+5. Go SMS Store consumes the event from Kafka.
+6. Go stores the SMS record in MongoDB.
+7. Clients can retrieve SMS history by calling the Go service's GET API.
 
-## Requirements
+## Tech Stack
+
+| Component | Technology |
+|-----------|-----------|
+| SMS Sender | Java 17, Spring Boot 4 |
+| SMS Store | Go 1.22+, standard net/http |
+| Message Broker | Apache Kafka |
+| Block List | Redis |
+| Data Store | MongoDB |
+| Containerization | Docker Compose |
+
+## Prerequisites
+
+- Java 17 or later
+- Go 1.22 or later
+- Docker Desktop
+
+## How to Run Locally
+
+### Step 1: Clone the repository
 
 ```bash
-pip install numpy scipy matplotlib
+git clone https://github.com/nishitasinghhh/polyglot-sms-service.git
+cd polyglot-sms-service
 ```
 
----
+### Step 2: Start infrastructure (Kafka, Redis, MongoDB)
 
-## Quick Start
-
-### Option 1: Run the full pipeline
-```python
-from rimfax_pipeline import run_full_pipeline
-
-results = run_full_pipeline(
-    sols=[384, 387, 389, 398],
-    data_dir='./rimfax_data/',
-    output_dir='./results/'
-)
+```bash
+docker-compose up -d
 ```
 
-### Option 2: Step-by-step processing
-```python
-from rimfax_pipeline import *
+Verify all services are running:
 
-# STEP 1: Load data for one sol
-loader = RIMFAXDataLoader('./rimfax_data/')
-data = loader.load_sol_data(384, mode='shallow')
-
-# STEP 2: Process the radargram
-processor = RIMFAXProcessor()
-processed = processor.process(data)
-
-# STEP 3: Estimate dielectric permittivity
-estimator = PermittivityEstimator()
-stats = estimator.fit_all_hyperbolas(
-    processed['traces'],
-    processed['time_axis_ns'],
-    processed['positions']
-)
-print(f"Permittivity: {estimator.get_bulk_permittivity():.1f}")
-print(f"Velocity: {estimator.get_bulk_velocity():.3f} m/ns")
-print(f"Density: {estimator.get_bulk_density():.2f} g/cm³")
-
-# STEP 4: Convert travel time to depth
-converter = DepthConverter(estimator.get_bulk_velocity())
-depth_axis = converter.time_to_depth(processed['time_axis_ns'])
-
-# STEP 5: Pick reflector boundaries (automatic)
-mapper = StratigraphyMapper(estimator.get_bulk_velocity())
-picks = mapper.auto_pick_layers(
-    processed['traces'],
-    processed['time_axis_ns'],
-    processed['positions']
-)
-
-# STEP 6: Map stratigraphy
-if 'seitah' in picks:
-    thickness = mapper.compute_maaz_thickness(picks['seitah'], processed['positions'])
-    paleo = mapper.compute_paleosurface(picks['seitah'], processed['positions'])
-    relief = mapper.compute_relief(paleo)
-    print(f"Máaz thickness: {thickness['mean']:.2f} ± {thickness['std']:.2f} m")
-
-# STEP 7: Visualize
-viz = RIMFAXVisualizer()
-viz.plot_interpreted_radargram(
-    processed['traces'],
-    processed['time_axis_ns'],
-    processed['positions'],
-    picks, sol=384
-)
-plt.show()
+```bash
+docker-compose ps
 ```
 
-### Option 3: Interactive manual picking
-```python
-# After processing, pick layers manually by clicking on the radargram
-mapper = StratigraphyMapper(0.1)
-picks = mapper.manual_pick_layer(
-    processed['traces'],
-    processed['time_axis_ns'],
-    processed['positions'],
-    layer_name='seitah'
-)
+All 4 containers (kafka, zookeeper, redis, mongodb) should show "Up".
+
+### Step 3: Start the Go SMS Store service
+
+```bash
+cd sms-store
+go mod tidy
+go run .
 ```
 
----
+You should see:
 
-## Pipeline Steps Explained
+```
+Connected to MongoDB
+Kafka consumer started, listening on 'sms-events'...
+SMS Store running on :8081
+```
 
-| Step | Class | What it does |
-|------|-------|--------------|
-| 1 | `RIMFAXDataLoader` | Load PDS data, stitch surface/shallow/deep modes |
-| 2 | `RIMFAXProcessor` | Background removal, Hamming window, gain, filtering |
-| 3 | `PermittivityEstimator` | Find & fit hyperbolas → permittivity, velocity, density |
-| 4 | `DepthConverter` | Convert two-way travel time to depth (m) |
-| 5 | `StratigraphyMapper` | Pick reflector boundaries, map formations |
-| 6 | `RIMFAXVisualizer` | Radargrams, thickness maps, paleosurface, relief |
-| 7 | `ResultsExporter` | CSV tables matching paper's Tables A1, A2, A3 |
+### Step 4: Start the Java SMS Sender service (in a new terminal)
 
----
+```bash
+cd sms-sender
+./mvnw spring-boot:run
+```
 
-## Customizing for Different Sols
+You should see:
 
-Edit the `CONFIG` dictionary at the top of `rimfax_pipeline.py`:
+```
+Tomcat started on port 8080
+Started SmsSenderApplication
+```
 
-```python
-CONFIG = {
-    'sols': [400, 401, 402, ...],   # Your sols
-    'data_dir': '/path/to/data/',
-    'output_dir': '/path/to/results/',
-    'assumed_permittivity': 9.0,     # Adjust if needed
-    'gain_type': 'spreading',        # or 'agc' or 'sec'
-    # ... more options
+Both services are now running.
+
+## API Endpoints
+
+### Service 1: SMS Sender (Java) — Port 8080
+
+#### POST /v1/sms/send
+
+Sends an SMS message. Checks the Redis block list, calls the mock 3P vendor, and publishes an event to Kafka.
+
+**Request:**
+
+```
+POST http://localhost:8080/v1/sms/send
+Content-Type: application/json
+```
+
+```json
+{
+  "userId": "user_42",
+  "phoneNumber": "+919876543210",
+  "message": "Hello World"
 }
 ```
 
----
+**Responses:**
 
-## Output Files
+| Status | Meaning |
+|--------|---------|
+| `SUCCESS` | SMS sent and event published to Kafka |
+| `BLOCKED` | Phone number is in the Redis block list |
+| `FAIL` | 3P vendor failed to deliver the SMS |
+| `PARTIAL` | SMS sent but Kafka event publish failed |
+| `ERROR` | Validation error or service unavailable |
 
-The pipeline produces:
-- `radargram_solXXX.png` — Uninterpreted + interpreted radargrams
-- `hyperbolas_solXXX.png` — Radargram with hyperbola fits
-- `stratigraphy_solXXX.png` — Cross-section stratigraphic model
-- `maaz_thickness.png` — Multi-sol thickness map
-- `paleosurface.png` — Surface vs buried Séítah topography
-- `relief.png` — Relief of Máaz–Séítah contact
-- `stratigraphic_picks.csv` — All reflector picks (Table A1 format)
-- `hyperbola_fits.csv` — All hyperbola fits (Table A2 format)
-- `analysis_summary.json` — Statistics (Table A3 format)
+**Success response:**
 
----
-
-## Key Equations (from the paper)
-
-**Permittivity from velocity:**
-```
-εr = (c / v)²
+```json
+{
+  "status": "SUCCESS",
+  "message": "SMS sent successfully"
+}
 ```
 
-**Bulk density from permittivity:**
-```
-ρ ≈ √εr
+**Blocked user response:**
+
+```json
+{
+  "status": "BLOCKED",
+  "message": "User is in the block list"
+}
 ```
 
-**Depth from travel time:**
-```
-depth = (c × Δt) / (2 × √εr)
+**Validation error response:**
+
+```json
+{
+  "status": "ERROR",
+  "message": "Phone number is required"
+}
 ```
 
-**Hyperbola model:**
+**Malformed JSON response (400 Bad Request):**
+
+```json
+{
+  "status": "ERROR",
+  "message": "Invalid JSON format. Please check your request body."
+}
 ```
-t(x) = √(t0² + (2Δx/v)²)
+
+#### POST /v1/sms/block/{phoneNumber}
+
+Adds a phone number to the block list.
+
+```
+POST http://localhost:8080/v1/sms/block/+919876543210
 ```
 
----
+#### DELETE /v1/sms/block/{phoneNumber}
 
-## Reference
+Removes a phone number from the block list.
 
-Shoemaker, E. S. et al. (2024). "Observations of Igneous Subsurface
-Stratigraphy during the Jezero Crater Floor Rapid Traverse from the
-RIMFAX Ground-penetrating Radar." *The Planetary Science Journal*, 5:191.
-https://doi.org/10.3847/PSJ/ad6445
+```
+DELETE http://localhost:8080/v1/sms/block/+919876543210
+```
+
+### Service 2: SMS Store (GoLang) — Port 8081
+
+#### GET /v1/user/{userId}/messages
+
+Fetches all stored SMS records for a specific userId.
+
+**Request:**
+
+```
+GET http://localhost:8081/v1/user/user_42/messages
+```
+
+**Response:**
+
+```json
+[
+  {
+    "userId": "user_42",
+    "phoneNumber": "+919876543210",
+    "message": "Hello World",
+    "status": "SUCCESS",
+    "sentAt": "2026-05-28T10:30:00.123456Z"
+  }
+]
+```
+
+Returns an empty array `[]` if no messages exist for the given userId.
+
+#### GET /health
+
+Health check endpoint.
+
+```
+GET http://localhost:8081/health
+```
+
+**Response:**
+
+```json
+{
+  "status": "ok"
+}
+```
+
+## End-to-End Demonstration
+
+A demo script is included. With both services running:
+
+```bash
+./demo.sh
+```
+
+Or run the steps manually:
+
+```bash
+# 1. Block a user
+docker exec -it redis redis-cli SADD blocked_users "+91blocked"
+
+# 2. Try sending to blocked user (should return BLOCKED)
+curl -X POST http://localhost:8080/v1/sms/send \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"user1","phoneNumber":"+91blocked","message":"Hello"}'
+
+# 3. Send to normal user (should return SUCCESS)
+curl -X POST http://localhost:8080/v1/sms/send \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"user_42","phoneNumber":"+919876543210","message":"Demo message!"}'
+
+# 4. Check the Go service terminal — you should see:
+#    "Saved SMS for +919876543210"
+
+# 5. Fetch SMS history from Go service
+curl http://localhost:8081/v1/user/user_42/messages
+```
+
+## Running Tests
+
+### Java (6 tests)
+
+```bash
+cd sms-sender
+./mvnw test
+```
+
+### Go (5 tests)
+
+```bash
+cd sms-store
+go test ./...
+```
+
+## Error Handling
+
+| Scenario | Behavior |
+|----------|----------|
+| Redis unreachable | Fail-closed — SMS blocked for safety, returns ERROR |
+| Kafka down | Returns PARTIAL — SMS sent but event not logged |
+| 3P vendor failure | Returns FAIL status |
+| Go service unreachable | Logs warning, continues (Kafka handles delivery) |
+| Malformed JSON request | Returns 400 with clear error message |
+| Empty phone number | Returns ERROR with validation message |
+| Empty message | Returns ERROR with validation message |
+| MongoDB down (Go side) | Logs error, Kafka retries the message |
+
+## Project Structure
+
+```
+polyglot-sms-service/
+├── docker-compose.yml              # Infrastructure (Kafka, Redis, MongoDB)
+├── README.md                       # This file
+├── demo.sh                         # End-to-end demo script
+│
+├── sms-sender/                     # Java / Spring Boot
+│   ├── pom.xml
+│   └── src/main/java/com/sms/
+│       ├── SmsSenderApplication.java
+│       ├── AppConfig.java
+│       ├── controller/
+│       │   ├── SmsController.java
+│       │   └── GlobalExceptionHandler.java
+│       ├── service/
+│       │   ├── SmsService.java
+│       │   ├── BlockListService.java
+│       │   ├── SmsVendorService.java
+│       │   └── SmsStoreClient.java
+│       ├── kafka/
+│       │   └── SmsEventProducer.java
+│       └── model/
+│           ├── SmsRequest.java
+│           ├── SmsResponse.java
+│           └── SmsEvent.java
+│
+└── sms-store/                      # GoLang
+    ├── go.mod
+    ├── main.go
+    ├── handlers/
+    │   ├── messages.go
+    │   └── messages_test.go
+    ├── kafka/
+    │   └── consumer.go
+    ├── store/
+    │   └── mongodb.go
+    └── models/
+        └── sms.go
+```

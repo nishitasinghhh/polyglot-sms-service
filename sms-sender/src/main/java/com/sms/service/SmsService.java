@@ -23,6 +23,9 @@ public class SmsService {
     @Autowired
     private SmsEventProducer eventProducer;
 
+    @Autowired
+    private SmsStoreClient smsStoreClient;
+
     public SmsResponse send(SmsRequest request) {
         String phone = request.getPhoneNumber();
         String message = request.getMessage();
@@ -43,6 +46,11 @@ public class SmsService {
         } catch (Exception e) {
             log.error("Redis is unreachable: {}. Blocking SMS for safety (fail-closed).", e.getMessage());
             return new SmsResponse("ERROR", "Service temporarily unavailable. Please try again later.");
+        }
+
+        // Check Go service connectivity
+        if (!smsStoreClient.isGoServiceHealthy()) {
+            log.warn("Go SMS Store service is down. SMS will still be sent but storage may be delayed.");
         }
 
         // 3P vendor call

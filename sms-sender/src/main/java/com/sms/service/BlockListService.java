@@ -20,4 +20,8 @@ public class BlockListService {
     public void blockUser(String phoneNumber) {
         redisTemplate.opsForSet().add(BLOCKED_USERS_KEY, phoneNumber);
     }
+
+    public void unblockUser(String phoneNumber) {
+        redisTemplate.opsForSet().remove(BLOCKED_USERS_KEY, phoneNumber);
+    }
 }

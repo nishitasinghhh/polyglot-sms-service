@@ -35,7 +35,7 @@ class SmsServiceTest {
     void shouldRejectBlockedUser() {
         when(blockListService.isBlocked("+91blocked")).thenReturn(true);
 
-        SmsResponse response = smsService.send(new SmsRequest("+91blocked", "hello"));
+        SmsResponse response = smsService.send(new SmsRequest("user1", "+91blocked", "hello"));
 
         assertEquals("BLOCKED", response.getStatus());
         verify(vendorService, never()).sendSms(any(), any());
@@ -47,7 +47,7 @@ class SmsServiceTest {
         when(blockListService.isBlocked("+91999")).thenReturn(false);
         when(vendorService.sendSms("+91999", "hello")).thenReturn("SUCCESS");
 
-        SmsResponse response = smsService.send(new SmsRequest("+91999", "hello"));
+        SmsResponse response = smsService.send(new SmsRequest("user2", "+91999", "hello"));
 
         assertEquals("SUCCESS", response.getStatus());
         verify(eventProducer).publishSmsEvent(any(SmsEvent.class));
@@ -58,7 +58,7 @@ class SmsServiceTest {
         when(blockListService.isBlocked("+91888")).thenReturn(false);
         when(vendorService.sendSms("+91888", "hello")).thenReturn("FAIL");
 
-        SmsResponse response = smsService.send(new SmsRequest("+91888", "hello"));
+        SmsResponse response = smsService.send(new SmsRequest("user3", "+91888", "hello"));
 
         assertEquals("FAIL", response.getStatus());
         verify(eventProducer).publishSmsEvent(any(SmsEvent.class));
@@ -66,13 +66,13 @@ class SmsServiceTest {
 
     @Test
     void shouldRejectEmptyPhoneNumber() {
-        SmsResponse response = smsService.send(new SmsRequest("", "hello"));
+        SmsResponse response = smsService.send(new SmsRequest("user4", "", "hello"));
         assertEquals("ERROR", response.getStatus());
     }
 
     @Test
     void shouldRejectEmptyMessage() {
-        SmsResponse response = smsService.send(new SmsRequest("+91999", ""));
+        SmsResponse response = smsService.send(new SmsRequest("user5", "+91999", ""));
         assertEquals("ERROR", response.getStatus());
     }
 }

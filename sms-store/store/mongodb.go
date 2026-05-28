@@ -40,11 +40,11 @@ func SaveMessage(record models.SmsRecord) error {
 	return err
 }
 
-func GetMessages(phoneNumber string) ([]models.SmsRecord, error) {
+func GetMessages(userId string) ([]models.SmsRecord, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cursor, err := collection.Find(ctx, bson.M{"phoneNumber": phoneNumber})
+	cursor, err := collection.Find(ctx, bson.M{"userId": userId})
 	if err != nil {
 		return nil, err
 	}

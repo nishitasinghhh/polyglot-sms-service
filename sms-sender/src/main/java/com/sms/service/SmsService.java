@@ -34,15 +34,34 @@ public class SmsService {
             return new SmsResponse("ERROR", "Message is required");
         }
 
-        if (blockListService.isBlocked(phone)) {
-            log.warn("User {} is blocked", phone);
-            return new SmsResponse("BLOCKED", "User is in the block list");
+        // Redis check — fail-closed (block SMS if Redis is down for safety)
+        try {
+            if (blockListService.isBlocked(phone)) {
+                log.warn("User {} is blocked", phone);
+                return new SmsResponse("BLOCKED", "User is in the block list");
+            }
+        } catch (Exception e) {
+            log.error("Redis is unreachable: {}. Blocking SMS for safety (fail-closed).", e.getMessage());
+            return new SmsResponse("ERROR", "Service temporarily unavailable. Please try again later.");
         }
 
-        String vendorStatus = vendorService.sendSms(phone, message);
+        // 3P vendor call
+        String vendorStatus;
+        try {
+            vendorStatus = vendorService.sendSms(phone, message);
+        } catch (Exception e) {
+            log.error("3P vendor call failed: {}", e.getMessage());
+            return new SmsResponse("FAIL", "SMS vendor is unavailable");
+        }
 
-        SmsEvent event = new SmsEvent(phone, message, vendorStatus);
-        eventProducer.publishSmsEvent(event);
+        // Kafka publish — don't silently lose the message
+        try {
+            SmsEvent event = new SmsEvent(request.getUserId(), phone, message, vendorStatus);
+            eventProducer.publishSmsEvent(event);
+        } catch (Exception e) {
+            log.error("Kafka is down: {}. SMS was sent but event not logged.", e.getMessage());
+            return new SmsResponse("PARTIAL", "SMS sent but failed to log event. Please retry.");
+        }
 
         if ("FAIL".equals(vendorStatus)) {
             return new SmsResponse("FAIL", "SMS delivery failed");

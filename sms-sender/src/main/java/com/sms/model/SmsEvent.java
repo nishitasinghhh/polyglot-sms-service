@@ -3,6 +3,7 @@ package com.sms.model;
 import java.time.Instant;
 
 public class SmsEvent {
+    private String userId;
     private String phoneNumber;
     private String message;
     private String status;
@@ -10,13 +11,16 @@ public class SmsEvent {
 
     public SmsEvent() {}
 
-    public SmsEvent(String phoneNumber, String message, String status) {
+    public SmsEvent(String userId, String phoneNumber, String message, String status) {
+        this.userId = userId;
         this.phoneNumber = phoneNumber;
         this.message = message;
         this.status = status;
         this.sentAt = Instant.now().toString();
     }
 
+    public String getUserId() { return userId; }
+    public void setUserId(String userId) { this.userId = userId; }
     public String getPhoneNumber() { return phoneNumber; }
     public void setPhoneNumber(String phoneNumber) { this.phoneNumber = phoneNumber; }
     public String getMessage() { return message; }
